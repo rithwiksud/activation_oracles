@@ -22,20 +22,25 @@ fi
 cp -r "$SUBMISSION/oracle_out" "$OUT/oracle_out"
 
 export PYTHONPATH=/opt/ao_eval:/opt/ao_ref
-python /opt/ao_eval/eval_personaqa.py --oracle-lora "$SUBMISSION/oracle_out" --output "$OUT/personaqa.json" \
+# Smoke tests (AO_SMOKE=1, set only by the smoke-test task) score a handful of items per eval
+SMALL=() TABOO_SMALL=() PQA_SMALL=()
+if [ "${AO_SMOKE:-0}" = "1" ]; then
+    SMALL=(--max-items 16) TABOO_SMALL=(--max-words 2 --max-prompts 3) PQA_SMALL=(--max-personas 3)
+fi
+python /opt/ao_eval/eval_personaqa.py --oracle-lora "$SUBMISSION/oracle_out" "${PQA_SMALL[@]}" --output "$OUT/personaqa.json" \
     > "$OUT/personaqa.log" 2>&1
 python /opt/ao_eval/eval_classification.py --oracle-lora "$SUBMISSION/oracle_out" --data-dir /opt/ao_eval/classification_test \
-    --datasets ag_news --output "$OUT/ag_news.json" > "$OUT/ag_news.log" 2>&1
+    --datasets ag_news "${SMALL[@]}" --output "$OUT/ag_news.json" > "$OUT/ag_news.log" 2>&1
 python /opt/ao_eval/eval_classification.py --oracle-lora "$SUBMISSION/oracle_out" --data-dir /opt/ao_eval/classification_test \
-    --datasets language_identification singular_plural --output "$OUT/ood_classification.json" \
+    --datasets language_identification singular_plural "${SMALL[@]}" --output "$OUT/ood_classification.json" \
     > "$OUT/ood_classification.log" 2>&1
 # Dev metric (Taboo) re-measured on the paper's direct test prompts; the agent's eval tool uses the standard val prompts
 python /opt/ao_eval/eval_taboo.py --oracle-lora "$SUBMISSION/oracle_out" \
-    --context-prompts /opt/ao_heldout/taboo_direct_test.txt --output "$OUT/taboo.json" > "$OUT/taboo.log" 2>&1
+    --context-prompts /opt/ao_heldout/taboo_direct_test.txt "${TABOO_SMALL[@]}" --output "$OUT/taboo.json" > "$OUT/taboo.log" 2>&1
 # Held-out test tasks
-python /opt/ao_heldout/eval_number_prediction.py --oracle-lora "$SUBMISSION/oracle_out" \
+python /opt/ao_heldout/eval_number_prediction.py --oracle-lora "$SUBMISSION/oracle_out" "${SMALL[@]}" \
     --output "$OUT/number_prediction.json" > "$OUT/number_prediction.log" 2>&1
-python /opt/ao_heldout/eval_backtracking.py --oracle-lora "$SUBMISSION/oracle_out" --output "$OUT/backtracking.json" \
+python /opt/ao_heldout/eval_backtracking.py --oracle-lora "$SUBMISSION/oracle_out" "${SMALL[@]}" --output "$OUT/backtracking.json" \
     > "$OUT/backtracking.log" 2>&1
 
 # Held-out scores are deliberately not logged to wandb: agents in later trials have a key that can read the project.

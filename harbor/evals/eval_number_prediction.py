@@ -17,10 +17,11 @@ QUESTION = "Answer with the numbers only. What numbers appear in the arithmetic 
 parser = argparse.ArgumentParser()
 parser.add_argument("--oracle-lora", required=True)
 parser.add_argument("--items", default="/opt/ao_heldout/number_prediction.json")
+parser.add_argument("--max-items", type=int, default=None, help="for smoke tests")
 parser.add_argument("--output", default=None)
 args = parser.parse_args()
 
-items = json.load(open(args.items))
+items = json.load(open(args.items))[: args.max_items]
 infos = [
     VerbalizerInputInfo(
         context_prompt=[{"role": "user", "content": it["prompt"]}],

@@ -25,17 +25,19 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--oracle-lora", required=True)
 parser.add_argument("--target-lora-dir", default="/opt/ao_targets/taboo")
 parser.add_argument("--context-prompts", default="/opt/ao_eval/taboo_standard_val.txt")
+parser.add_argument("--max-words", type=int, default=None, help="for smoke tests")
+parser.add_argument("--max-prompts", type=int, default=None, help="for smoke tests")
 parser.add_argument("--output", default=None)
 args = parser.parse_args()
 
 with open(args.context_prompts) as f:
-    context_prompts = [line.strip() for line in f]
+    context_prompts = [line.strip() for line in f][: args.max_prompts]
 
 model, tokenizer = load_base_model()
 
 by_word = {}
 all_results = []
-for word in SECRET_WORDS:
+for word in SECRET_WORDS[: args.max_words]:
     infos = [
         VerbalizerInputInfo(
             context_prompt=[{"role": "user", "content": context_prompt}],

@@ -26,6 +26,12 @@ EVALS = {
     "ood_classification": [*CLASSIFICATION, "language_identification", "singular_plural"],
 }
 BUDGETS = {"dev": int(os.environ["AO_EVAL_MAX_DEV_CALLS"]), "val": int(os.environ["AO_EVAL_MAX_VAL_CALLS"])}
+# Smoke tests score a handful of items per eval (set only by the smoke-test task)
+if os.environ["AO_EVAL_SMOKE"] == "1":
+    EVALS["taboo"] += ["--max-words", "2", "--max-prompts", "3"]
+    EVALS["ag_news"] += ["--max-items", "16"]
+    EVALS["personaqa"] += ["--max-personas", "3"]
+    EVALS["ood_classification"] += ["--max-items", "16"]
 
 server = FastMCP("ao-eval", host="0.0.0.0", port=8000)
 lock = threading.Lock()  # one eval at a time: they share the GPU with training

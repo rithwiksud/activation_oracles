@@ -16,10 +16,11 @@ QUESTION = "Answer with yes or no only. Is the model about to reconsider or revi
 parser = argparse.ArgumentParser()
 parser.add_argument("--oracle-lora", required=True)
 parser.add_argument("--items", default="/opt/ao_heldout/backtracking.json")
+parser.add_argument("--max-items", type=int, default=None, help="for smoke tests")
 parser.add_argument("--output", default=None)
 args = parser.parse_args()
 
-items = json.load(open(args.items))
+items = json.load(open(args.items))[: args.max_items]
 # The context is the rendered chat prompt plus partial thinking, tokenized verbatim (see ao_eval_common)
 infos = [VerbalizerInputInfo(context_prompt=it["context"], verbalizer_prompt=QUESTION, ground_truth=it["label"]) for it in items]
 

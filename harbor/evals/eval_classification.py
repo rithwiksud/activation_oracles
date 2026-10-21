@@ -26,6 +26,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--oracle-lora", required=True)
 parser.add_argument("--data-dir", required=True)
 parser.add_argument("--datasets", nargs="+", default=["ag_news", "language_identification", "singular_plural"])
+parser.add_argument("--max-items", type=int, default=None, help="per dataset; for smoke tests")
 parser.add_argument("--output", default=None)
 args = parser.parse_args()
 
@@ -43,7 +44,7 @@ by_dataset = {}
 for ds in args.datasets:
     files = sorted(glob.glob(f"{args.data_dir}/classification_{ds}_*test*.pt"))
     assert files, f"no cached test set for {ds} in {args.data_dir}"
-    data = [TrainingDataPoint(**d) for f in files for d in torch.load(f, weights_only=False)["data"]]
+    data = [TrainingDataPoint(**d) for f in files for d in torch.load(f, weights_only=False)["data"]][: args.max_items]
     responses = run_evaluation(
         eval_data=data, model=model, tokenizer=tokenizer, submodule=submodule, device=torch.device("cuda"),
         dtype=torch.bfloat16, global_step=-1, lora_path=None, eval_batch_size=256, steering_coefficient=1.0,
