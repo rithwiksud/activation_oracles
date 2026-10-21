@@ -1,0 +1,5 @@
+#!/bin/bash
+# Prints time used and remaining in the agent's budget (must match [agent].timeout_sec in task.toml).
+BUDGET_MIN=150
+used=$(( ($(date +%s) - $(cat /app/.agent_start)) / 60 ))
+echo "Used $used of $BUDGET_MIN minutes; $((BUDGET_MIN - used)) minutes left"

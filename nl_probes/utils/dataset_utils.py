@@ -160,6 +160,7 @@ def materialize_missing_steering_vectors(
     batch_points: list[TrainingDataPoint],
     tokenizer: AutoTokenizer,
     model: PeftModel,
+    max_context_tokens: int = 32768,
 ) -> list[TrainingDataPoint]:
     """
     Materialization of missing steering vectors for a heterogenous batch
@@ -167,8 +168,10 @@ def materialize_missing_steering_vectors(
 
     Steps:
       1) Find items with steering_vectors=None.
-      2) Build a left-padded batch from their context_input_ids.
-      3) Register hooks for all unique requested layers and run exactly one forward pass.
+      2) Sort them by context length and split into chunks of at most max_context_tokens padded tokens, so short
+         contexts aren't padded to the longest one (context lengths range from ~20 to ~1k tokens).
+      3) For each chunk, build a left-padded batch from their context_input_ids, register hooks for all unique
+         requested layers and run one forward pass.
       4) For each item, take activations at its requested layer and its context_positions,
          then write back a [num_positions, D] tensor to dp.steering_vectors. Returns a new batch.
 
@@ -190,70 +193,79 @@ def materialize_missing_steering_vectors(
                 "Datapoint has steering_vectors=None but is missing context_input_ids or context_positions"
             )
 
-    # Build the input batch (left padding to match your construct_batch convention)
+    # Ascending context length, chunked so each chunk's padded size (last length * rows) fits max_context_tokens
+    chunks: list[list[tuple[int, TrainingDataPoint]]] = [[]]
+    for item in sorted(to_fill, key=lambda item: len(item[1].context_input_ids)):
+        if chunks[-1] and len(item[1].context_input_ids) * (len(chunks[-1]) + 1) > max_context_tokens:
+            chunks.append([])
+        chunks[-1].append(item)
+
     pad_id = tokenizer.pad_token_id
-    contexts: list[list[int]] = [list(dp.context_input_ids) for _, dp in to_fill]
-    positions_per_item: list[list[int]] = [list(dp.context_positions) for _, dp in to_fill]
-    max_len = max(len(c) for c in contexts)
-
-    input_ids_tensors: list[torch.Tensor] = []
-    attn_masks_tensors: list[torch.Tensor] = []
-    left_offsets: list[int] = []
-
     device = next(model.parameters()).device
+    new_batch: list[TrainingDataPoint] = list(batch_points)  # references by default
 
-    for c in contexts:
-        pad_len = max_len - len(c)
-        input_ids_tensors.append(torch.tensor([pad_id] * pad_len + c, dtype=torch.long, device=device))
-        # For HF, bool masks are fine; your construct_batch uses bool too
-        attn_masks_tensors.append(torch.tensor([False] * pad_len + [True] * len(c), dtype=torch.bool, device=device))
-        left_offsets.append(pad_len)
-
-    inputs_BL = {
-        "input_ids": torch.stack(input_ids_tensors, dim=0),
-        "attention_mask": torch.stack(attn_masks_tensors, dim=0),
-    }
-
-    # Prepare hooks for all unique requested layers
-    layers_needed = sorted({dp.layer for _, dp in to_fill})
-    submodules = {layer: get_hf_submodule(model, layer, use_lora=True) for layer in layers_needed}
-
-    # Run a single pass with dropout off, then restore the previous train/eval mode
+    # Run with dropout off, then restore the previous train/eval mode. The adapter is disabled once for all chunks,
+    # since toggling it walks every LoRA module.
     was_training = model.training
     model.eval()
     with model.disable_adapter():
-        # [layer] -> [B, L, D], where B == len(to_fill)
-        acts_by_layer = collect_activations_multiple_layers(
-            model=model,
-            submodules=submodules,
-            inputs_BL=inputs_BL,
-            min_offset=None,
-            max_offset=None,
-        )
+        for chunk in chunks:
+            # Build the input batch (left padding to match your construct_batch convention)
+            contexts: list[list[int]] = [list(dp.context_input_ids) for _, dp in chunk]
+            positions_per_item: list[list[int]] = [list(dp.context_positions) for _, dp in chunk]
+            max_len = max(len(c) for c in contexts)
+
+            input_ids_tensors: list[torch.Tensor] = []
+            attn_masks_tensors: list[torch.Tensor] = []
+            left_offsets: list[int] = []
+
+            for c in contexts:
+                pad_len = max_len - len(c)
+                input_ids_tensors.append(torch.tensor([pad_id] * pad_len + c, dtype=torch.long, device=device))
+                # For HF, bool masks are fine; your construct_batch uses bool too
+                attn_masks_tensors.append(
+                    torch.tensor([False] * pad_len + [True] * len(c), dtype=torch.bool, device=device)
+                )
+                left_offsets.append(pad_len)
+
+            inputs_BL = {
+                "input_ids": torch.stack(input_ids_tensors, dim=0),
+                "attention_mask": torch.stack(attn_masks_tensors, dim=0),
+            }
+
+            # Prepare hooks for all unique requested layers
+            layers_needed = sorted({dp.layer for _, dp in chunk})
+            submodules = {layer: get_hf_submodule(model, layer, use_lora=True) for layer in layers_needed}
+
+            # [layer] -> [B, L, D], where B == len(chunk)
+            acts_by_layer = collect_activations_multiple_layers(
+                model=model,
+                submodules=submodules,
+                inputs_BL=inputs_BL,
+                min_offset=None,
+                max_offset=None,
+            )
+
+            for b in range(len(chunk)):
+                idx, dp = chunk[b]
+                acts_BLD = acts_by_layer[dp.layer]  # [B, L, D] on GPU
+
+                idxs = [p + left_offsets[b] for p in positions_per_item[b]]
+                # Bounds check for safety
+                L = acts_BLD.shape[1]
+                if any(i < 0 or i >= L for i in idxs):
+                    raise IndexError(f"Activation index out of range for item {b}: {idxs} with L={L}")
+
+                vectors = acts_BLD[b, idxs, :].detach().contiguous()
+
+                assert len(vectors.shape) == 2, f"Expected 2D tensor, got vectors.shape={vectors.shape}"
+
+                dp_new = dp.model_copy(deep=True)
+                dp_new.steering_vectors = vectors
+
+                new_batch[idx] = dp_new
     if was_training:
         model.train()
-
-    # Build the new list, copying only items we change
-    new_batch: list[TrainingDataPoint] = list(batch_points)  # references by default
-    for b in range(len(to_fill)):
-        idx, dp = to_fill[b]
-        layer = dp.layer
-        acts_BLD = acts_by_layer[layer]  # [B, L, D] on GPU
-
-        idxs = [p + left_offsets[b] for p in positions_per_item[b]]
-        # Bounds check for safety
-        L = acts_BLD.shape[1]
-        if any(i < 0 or i >= L for i in idxs):
-            raise IndexError(f"Activation index out of range for item {b}: {idxs} with L={L}")
-
-        vectors = acts_BLD[b, idxs, :].detach().contiguous()
-
-        assert len(vectors.shape) == 2, f"Expected 2D tensor, got vectors.shape={vectors.shape}"
-
-        dp_new = dp.model_copy(deep=True)
-        dp_new.steering_vectors = vectors
-
-        new_batch[idx] = dp_new
 
     return new_batch
 

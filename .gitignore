@@ -191,3 +191,9 @@ openai_api_key.txt
 *checkpoints*
 *max_acts*
 *model_lora*
+# TRL checkpoints from harbor/scripts/train_targets.py
+sft_outputs/
+# The Harbor task images and build script (the *images* pattern above would ignore them)
+!harbor/images/
+!harbor/images/**
+!harbor/build_images.sh

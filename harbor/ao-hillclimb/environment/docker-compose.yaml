@@ -1,0 +1,33 @@
+# Merged by Harbor on top of its base compose (which defines `main` from [environment].docker_image).
+# eval-server holds the dev/validation evals; the agent reaches it only through the MCP tools and hands it adapters
+# through the shared volume (read-only on the server side). With the network allowlist on, Harbor puts both services in
+# its egress sidecar's network namespace, so the agent reaches the server at localhost:8000 and the server gets no
+# outside internet. The containers still have separate filesystems and processes.
+services:
+  main:
+    depends_on:
+      eval-server:
+        condition: service_healthy
+    volumes:
+      - ao_shared:/shared
+
+  eval-server:
+    image: ao-evalserver:latest
+    volumes:
+      - ao_shared:/shared:ro
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('localhost', 8000), timeout=2).close()"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+
+volumes:
+  ao_shared:

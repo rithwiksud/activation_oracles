@@ -6,6 +6,7 @@ import gc
 import json
 import math
 import random
+import time
 from datetime import timedelta
 
 # All necessary imports are now included above
@@ -243,6 +244,12 @@ def eval_all_datasets(
     global_step: int,
 ) -> None:
     model.eval()
+    # Stop at the end of the assistant turn. Qwen3.5 ships no generation_config and its model config only stops at
+    # <|endoftext|>, so a trained oracle (whose targets end in <|im_end|>\n) runs on into a new turn and fails the
+    # exact yes/no format check. Add the tokenizer's eos (<|im_end|>) to whatever the model already stops on.
+    model_eos = model.generation_config.eos_token_id
+    model_eos = model_eos if isinstance(model_eos, list) else [model_eos]
+    generation_kwargs = {**cfg.generation_kwargs, "eos_token_id": sorted(set(model_eos) | {tokenizer.eos_token_id})}
     eval_results = {}
     for ds in eval_datasets:
         eval_responses = run_evaluation(
@@ -256,7 +263,7 @@ def eval_all_datasets(
             lora_path=None,
             eval_batch_size=cfg.eval_batch_size,
             steering_coefficient=cfg.steering_coefficient,
-            generation_kwargs=cfg.generation_kwargs,
+            generation_kwargs=generation_kwargs,
         )
         percent_format_correct, percent_ans_correct = score_eval_responses(eval_responses, eval_datasets[ds])
         eval_results[f"eval_format_correct/{ds}"] = percent_format_correct
@@ -285,7 +292,10 @@ def oom_preflight_check(
     dtype: torch.dtype,
 ) -> None:
     longest_prompt = max(training_data, key=lambda x: len(x.input_ids))
-    long_prompts = [longest_prompt] * cfg.train_batch_size
+    num_rows = cfg.train_batch_size
+    if cfg.train_tokens_per_batch is not None:
+        num_rows = min(num_rows, cfg.train_tokens_per_batch // len(longest_prompt.input_ids))
+    long_prompts = [longest_prompt] * num_rows
     long_prompts = materialize_missing_steering_vectors(long_prompts, tokenizer, model)
     largest_possible_batch = construct_batch(long_prompts, tokenizer, device)
 
@@ -387,11 +397,24 @@ def train_model(
 
     optimizer = torch.optim.AdamW(train_model_module.parameters(), lr=cfg.lr)
 
-    global_step_size = cfg.train_batch_size * world_size
-    effective_steps = (len(training_data) // global_step_size) * global_step_size
-    if effective_steps != len(training_data):
-        print(f"Trimming training_data from {len(training_data)} to {effective_steps} for equal DDP steps")
-        training_data = training_data[:effective_steps]
+    if cfg.train_tokens_per_batch is None:
+        global_step_size = cfg.train_batch_size * world_size
+        effective_steps = (len(training_data) // global_step_size) * global_step_size
+        if effective_steps != len(training_data):
+            print(f"Trimming training_data from {len(training_data)} to {effective_steps} for equal DDP steps")
+            training_data = training_data[:effective_steps]
+        # Shard dataset per rank (simple strided split)
+        rank_data = training_data[rank::world_size]
+        rank_batches = [
+            rank_data[i : i + cfg.train_batch_size] for i in range(0, len(rank_data), cfg.train_batch_size)
+        ]
+    else:
+        batches = token_budget_batches(training_data, cfg.train_tokens_per_batch, cfg.train_batch_size)
+        batches = batches[: (len(batches) // world_size) * world_size]
+        training_data = [dp for batch in batches for dp in batch]
+        # Shard whole batches per rank so every rank runs the same number of steps
+        rank_batches = batches[rank::world_size]
+        print(f"Token-budget batching: {len(batches)} batches, {len(training_data) / len(batches):.1f} rows/batch avg")
 
     # Token accounting (approx): count tokens after the DDP trim and before sharding.
     # This slightly overestimates actual training tokens because we later trim per-rank
@@ -401,18 +424,13 @@ def train_model(
         total_training_tokens_est = tokens_per_epoch_est * cfg.num_epochs
         num_examples_pre_shard = len(training_data)
 
-    # Shard dataset per rank (simple strided split)
-    training_data = training_data[rank::world_size]
-
-    num_batches_per_epoch = len(training_data) // cfg.train_batch_size
-    batches_per_epoch = (num_batches_per_epoch // cfg.gradient_accumulation_steps) * cfg.gradient_accumulation_steps
-    trimmed_examples = batches_per_epoch * cfg.train_batch_size
-    if trimmed_examples != len(training_data) and rank == 0:
+    batches_per_epoch = (len(rank_batches) // cfg.gradient_accumulation_steps) * cfg.gradient_accumulation_steps
+    if batches_per_epoch != len(rank_batches) and rank == 0:
         print(
-            f"Trimming per-rank training_data from {len(training_data)} to {trimmed_examples} "
+            f"Trimming per-rank batches from {len(rank_batches)} to {batches_per_epoch} "
             "to align with gradient_accumulation_steps"
         )
-    training_data = training_data[:trimmed_examples]
+    rank_batches = rank_batches[:batches_per_epoch]
 
     steps_per_epoch = batches_per_epoch // cfg.gradient_accumulation_steps
     assert steps_per_epoch > 0, "No optimizer steps will be run; check dataset/batch/accumulation sizes"
@@ -444,25 +462,22 @@ def train_model(
         wandb.summary["train/total_tokens_est"] = total_training_tokens_est
         wandb.summary["train/num_examples_pre_shard"] = num_examples_pre_shard
 
+    train_start_time = time.time()
+    padded_tokens_trained = 0
     for epoch in range(resume_epoch, cfg.num_epochs):
         accumulated_loss = 0.0
         optimizer.zero_grad()
-        for step_idx, start in enumerate(
-            tqdm(
-                range(0, len(training_data), cfg.train_batch_size),
-                desc=f"Training epoch {epoch + 1}",
-                disable=rank != 0,
-            )
+        for step_idx, t_batch_list in enumerate(
+            tqdm(rank_batches, desc=f"Training epoch {epoch + 1}", disable=rank != 0)
         ):
             if epoch == resume_epoch and step_idx < resume_step_idx:
                 continue
-
-            t_batch_list: list[TrainingDataPoint] = training_data[start : start + cfg.train_batch_size]
 
             # Compute missing steering vectors using the PEFT model (not DDP wrapper)
             t_batch_list = materialize_missing_steering_vectors(t_batch_list, tokenizer, model)
 
             t_batch = construct_batch(t_batch_list, tokenizer, device)
+            padded_tokens_trained += t_batch.input_ids.numel()
 
             # Forward/backward on the DDP-wrapped module if enabled
             loss = train_features_batch(cfg, t_batch, train_model_module, submodule, device, dtype)
@@ -488,6 +503,9 @@ def train_model(
                     )
                     if verbose:
                         print(f"Step {global_step} loss: {accumulated_loss}")
+                    if global_step % 50 == 0:
+                        elapsed = time.time() - train_start_time
+                        print(f"Throughput at step {global_step}: {padded_tokens_trained / elapsed:.0f} padded tokens/s")
 
                 # -------------------------------- evaluation --------------------------------
                 if global_step % cfg.eval_steps == 0 and (cfg.eval_on_start or global_step > 0):
@@ -524,7 +542,8 @@ def train_model(
                 global_step += 1
                 accumulated_loss = 0.0
 
-    print("Training complete.")
+    train_time = time.time() - train_start_time
+    print(f"Training complete in {train_time:.0f}s, {padded_tokens_trained / train_time:.0f} padded tokens/s")
 
     # Save final model
     if rank == 0:
@@ -566,6 +585,29 @@ def length_grouped_reorder(
 
     new_order = [i for mb in megabatches for i in mb]
     return [data[i] for i in new_order]
+
+
+def token_budget_batches(
+    data: list[TrainingDataPoint],
+    max_tokens: int,
+    max_rows: int,
+) -> list[list[TrainingDataPoint]]:
+    """Greedily chunks (length-grouped) data into batches of at most max_tokens padded tokens and max_rows rows.
+    Padded tokens = rows * longest row, since construct_batch pads every row to the longest."""
+    batches = []
+    batch = []
+    batch_max_len = 0
+    for dp in data:
+        assert len(dp.input_ids) <= max_tokens, f"Datapoint of {len(dp.input_ids)} tokens exceeds max_tokens"
+        new_max_len = max(batch_max_len, len(dp.input_ids))
+        if batch and (new_max_len * (len(batch) + 1) > max_tokens or len(batch) == max_rows):
+            batches.append(batch)
+            batch = []
+            new_max_len = len(dp.input_ids)
+        batch.append(dp)
+        batch_max_len = new_max_len
+    batches.append(batch)
+    return batches
 
 
 def build_datasets(
@@ -645,7 +687,7 @@ def build_loader_groups(
     model_kwargs: dict[str, Any],
 ) -> dict[str, list[ActDatasetLoader]]:
     DEBUG = False
-    num_datapoints = 100_000
+    num_datapoints = 10_000  # 10x scaled down from 100_000
 
     # DEBUG = True
 
@@ -689,7 +731,7 @@ def build_loader_groups(
     latent_qa_loader = LatentQADatasetLoader(
         dataset_config=mk_cfg(
             custom_params=LatentQADatasetConfig(),
-            num_train=100_000,
+            num_train=6_500,  # 10x scaled down from the full ~65k LatentQA train set (100_000 used all of it)
             num_test=0,
             splits=["train"],
             model_name=model_name,
@@ -858,7 +900,7 @@ if __name__ == "__main__":
     torch.cuda.set_device(local_rank)
     world_size = dist.get_world_size()
 
-    main_train_size = 6000
+    main_train_size = 600  # 10x scaled down from 6000
     main_test_size = 250
     classification_datasets = {
         "geometry_of_truth": {
@@ -924,7 +966,8 @@ if __name__ == "__main__":
         # "google/gemma-3-12b-it",
         # "google/gemma-3-27b-it",
         # "Qwen/Qwen3-4B",
-        "Qwen/Qwen3.6-27B",
+        # "Qwen/Qwen3.6-27B",
+        "Qwen/Qwen3.5-0.8B",
     ]
 
     for model_name in models:
@@ -933,7 +976,19 @@ if __name__ == "__main__":
         model_name_str = model_name.split("/")[-1].replace(".", "_").replace(" ", "_")
 
         train_batch_size = 16
-        gradient_checkpointing = True
+        train_tokens_per_batch = None
+        eval_batch_size = train_batch_size * 8
+        if model_name == "Qwen/Qwen3.5-0.8B":
+            # Token-budget batching: fill the GPU on every step instead of sizing batches for the longest prompt.
+            # train_batch_size caps rows (each row also needs a context forward pass to collect activations).
+            train_batch_size = 256
+            train_tokens_per_batch = 8192
+            eval_batch_size = 512
+        # Scale LR linearly with global batch size from the 1e-5 @ batch 16 reference. With token-budget batching
+        # this is overwritten below using the average rows per batch.
+        lr = 1e-5 * train_batch_size / 16
+        # Small models fit in memory without gradient checkpointing, and skipping the recompute is faster
+        gradient_checkpointing = model_name not in {"Qwen/Qwen3.5-0.8B"}
         model_kwargs = {}
         save_steps = 5_000
 
@@ -1004,8 +1059,10 @@ if __name__ == "__main__":
                 # wandb_suffix=wandb_suffix,
                 layer_percents=layer_percents,
                 train_batch_size=train_batch_size,
+                train_tokens_per_batch=train_tokens_per_batch,
+                lr=lr,
                 activation_collection_batch_size=train_batch_size * 4,
-                eval_batch_size=train_batch_size * 8,
+                eval_batch_size=eval_batch_size,
                 eval_steps=10_000,
                 eval_on_start=True,
                 gradient_checkpointing=gradient_checkpointing,
@@ -1028,6 +1085,14 @@ if __name__ == "__main__":
             all_training_data, all_eval_data = build_datasets(
                 cfg, dataset_loaders=loop_dataset_loaders, window_mult=cfg.window_mult
             )
+
+            if cfg.train_tokens_per_batch is not None:
+                num_batches = len(
+                    token_budget_batches(all_training_data, cfg.train_tokens_per_batch, cfg.train_batch_size)
+                )
+                avg_global_rows = len(all_training_data) / num_batches * world_size
+                cfg.lr = 1e-5 * avg_global_rows / 16
+                print(f"Token-budget batching: {avg_global_rows:.1f} global rows/batch avg, lr {cfg.lr:.2e}")
 
             # for debugging
             # all_training_data = all_training_data[:100]

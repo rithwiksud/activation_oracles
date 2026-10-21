@@ -25,6 +25,8 @@ class SelfInterpTrainingConfig:
 
     # --- Batching ---
     train_batch_size: int = 16
+    # If set, batches hold up to this many padded tokens per rank, with train_batch_size as the max rows per batch
+    train_tokens_per_batch: int | None = None
     eval_batch_size: int = 128
     activation_collection_batch_size: int = 128
 
@@ -52,7 +54,7 @@ class SelfInterpTrainingConfig:
     resume_from: str | None = None  # checkpoint dir with adapter + trainer_state.pt, resumes optimizer/scheduler/step
 
     # --- Tracking ---
-    wandb_project: str = "sae_introspection"
+    wandb_project: str = "activation_oracles"
     wandb_run_name: str = ""  # derived if empty
     wandb_suffix: str = ""
 

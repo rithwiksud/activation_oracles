@@ -1,0 +1,7 @@
+{
+  "env": { "CLAUDE_CODE_STOP_HOOK_BLOCK_CAP": "100000", "MCP_TOOL_TIMEOUT": "1200000" },
+  "hooks": {
+    "SessionStart": [{ "hooks": [{ "type": "command", "command": "/opt/ao_agent/record_start.sh" }] }],
+    "Stop": [{ "hooks": [{ "type": "command", "command": "/opt/ao_agent/keep_going.sh" }] }]
+  }
+}

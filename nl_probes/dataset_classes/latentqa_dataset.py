@@ -76,9 +76,14 @@ class LatentQADatasetLoader(ActDatasetLoader):
 
         self.ds = ds
 
+        # num_train caps the size of the full LatentQA train set (~65k datapoints)
+        indices = list(range(len(ds)))
+        if len(indices) > self.dataset_config.num_train:
+            indices = random.Random(self.dataset_config.seed).sample(indices, self.dataset_config.num_train)
+
         training_data = []
 
-        for dp in tqdm(ds, desc="Creating latentqa dataset"):
+        for dp in tqdm((ds[i] for i in indices), total=len(indices), desc="Creating latentqa dataset"):
             training_data.append(create_latentqa_training_datapoint(dp, tokenizer, layers, self.dataset_params))
 
         self.save_dataset(training_data, "train")

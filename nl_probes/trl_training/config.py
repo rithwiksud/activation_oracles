@@ -59,7 +59,7 @@ def CustomSFTConfig(
         learning_rate=5e-5,
         # lr_scheduler_type="linear",
         lr_scheduler_type="constant_with_warmup",
-        warmup_ratio=0.05,
+        warmup_steps=0.05,  # transformers 5: a float < 1 is a ratio of total steps (replaces warmup_ratio)
         bf16=True,
         eval_strategy="steps",
         eval_steps=50,
@@ -74,7 +74,7 @@ def CustomSFTConfig(
         logging_steps=1,
         run_name=model_name,
         # report_to="wandb",
-        report_to=None,
+        report_to="none",  # transformers 5 rejects None
         # completion_only_loss=True,
         # assistant_only_loss=True,
         seed=42,

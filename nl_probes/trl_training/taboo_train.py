@@ -81,7 +81,6 @@ def train_with_sft_only(
         trust_remote_code=True,
         torch_dtype=torch.bfloat16,
         attn_implementation="flash_attention_2",
-        use_cache=False,
     )
 
     # this is how I programmatically set initialization arguments for the Model
@@ -92,6 +91,8 @@ def train_with_sft_only(
     model = AutoModelForCausalLM.from_pretrained(
         **llm_kwargs,
     )
+    # Set on the text config: transformers 5 passes a use_cache kwarg to the model constructor for VLM wrappers
+    model.config.get_text_config().use_cache = False
 
     model.enable_input_require_grads()
     model.use_cache = False
@@ -110,6 +111,8 @@ def train_with_sft_only(
 
     sft_trainer = SFTTrainer(
         model=model,
+        # Text-only training; without this TRL loads the full processor, which for VLMs (Qwen3.5) needs torchvision
+        processing_class=tokenizer,
         train_dataset=sft_train_ds,
         eval_dataset=sft_hf_eval_test_ds,
         args=sft_config,
