@@ -23,7 +23,7 @@ paper's direct test prompts) and `ood_classification`. Held-out scores never go 
 | `images/` | Dockerfiles for `ao-base`, `ao-agent`, `ao-verifier` |
 | `scripts/build_classification_test_sets.py` | Builds the classification test sets with the AO paper's single-token protocol |
 | `build_images.sh` | Stages contexts under `$BUILD` (default `/home/ubuntu/ao_harbor_build`) and builds the images |
-| `evals/` | Eval scripts, each reading the positions its source paper reports (Taboo: single token, classification: single token, Number Prediction and MMLU Prediction: last 10 tokens) |
+| `evals/` | Eval scripts with each source paper's datasets, prompts and scoring; the oracle always reads the full sequence |
 | `scripts/train_targets.py` | Trains the 20 Taboo target LoRAs for Qwen3.5-0.8B, once each (PersonaQA support is unused) |
 | `scripts/dump_pastlens_slices.py` | Dumps fineweb / lmsys-chat slices so PastLens works offline |
 | `repo_files/train.sh` | The submission entrypoint placed in the agent's repo |
