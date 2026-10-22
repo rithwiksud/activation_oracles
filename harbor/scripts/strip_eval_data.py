@@ -1,5 +1,5 @@
 """Remove check-task eval data from the staged agent-visible repo, so evaluation is only possible through the MCP eval
-server: the PersonaQA personas, and the three test-only OOD classification sets that nl_probes/sft.py otherwise
+server: the three test-only OOD classification sets that nl_probes/sft.py otherwise
 scores during training (ag_news, language_identification, singular_plural).
 
 Usage: python strip_eval_data.py <staged ao_ref dir>
@@ -27,6 +27,6 @@ for entry in [
     s = s.replace(entry, "")
 sft.write_text(s)
 
-for d in ["datasets/personaqa_data", "datasets/classification_datasets/ag_news", "datasets/classification_datasets/singular_plural"]:
+for d in ["datasets/classification_datasets/ag_news", "datasets/classification_datasets/singular_plural"]:
     shutil.rmtree(ref / d)
 print(f"stripped check-task eval data from {ref}")

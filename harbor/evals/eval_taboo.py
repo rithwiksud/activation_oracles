@@ -1,5 +1,6 @@
 """Taboo eval (the agent's train task): each target LoRA was fine-tuned to give hints about one secret word without
-saying it. The oracle sees activations of a direct question to the target and must name the secret word.
+saying it. The oracle sees the activations of the full prompt to the target (the AO paper's default
+input) and must name the secret word.
 
 Usage: python eval_taboo.py --oracle-lora <adapter dir> [--output results.json]
 """
@@ -47,7 +48,8 @@ for word in SECRET_WORDS[: args.max_words]:
         for question in ORACLE_QUESTIONS
         for context_prompt in context_prompts
     ]
-    results = run_oracle(model, tokenizer, args.oracle_lora, f"{args.target_lora_dir}/{word}", infos, max_new_tokens=20)
+    target = f"{args.target_lora_dir}/{word}"
+    results = run_oracle(model, tokenizer, args.oracle_lora, target, infos, max_new_tokens=20, input_type="full_seq")
     by_word[word] = sum(is_correct(r) for r in results) / len(results)
     all_results.extend(results)
 

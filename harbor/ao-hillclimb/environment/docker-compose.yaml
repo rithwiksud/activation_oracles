@@ -1,5 +1,5 @@
 # Merged by Harbor on top of its base compose (which defines `main` from [environment].docker_image).
-# eval-server holds the dev/validation evals; the agent reaches it only through the MCP tools and hands it adapters
+# eval-server holds the validation evals; the agent reaches it only through the MCP tools and hands it adapters
 # through the shared volume (read-only on the server side). With the network allowlist on, Harbor puts both services in
 # its egress sidecar's network namespace, so the agent reaches the server at localhost:8000 and the server gets no
 # outside internet. The containers still have separate filesystems and processes.

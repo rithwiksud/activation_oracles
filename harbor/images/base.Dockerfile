@@ -23,10 +23,8 @@ COPY prebuilt/ /opt/venv/lib/python3.10/site-packages/
 RUN chmod -R a+rX /opt/venv
 
 ENV PATH=/opt/venv/bin:$PATH HF_HOME=/opt/hf
+# Only the model: classification training data ships as capped pools in /opt/ao_ref (see cap_training_data.py)
 RUN python -c "from huggingface_hub import snapshot_download; snapshot_download('Qwen/Qwen3.5-0.8B')" \
-    && python -c "from datasets import load_dataset; \
-load_dataset('facebook/md_gender_bias', name='funpedia', trust_remote_code=True); \
-load_dataset('stanfordnlp/snli'); load_dataset('stanfordnlp/sst2')" \
     && chmod -R a+rwX /opt/hf
 
 COPY ao_data/ /opt/ao_data/

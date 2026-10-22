@@ -1,5 +1,17 @@
 #!/bin/bash
-# Prints time used and remaining in the agent's budget (must match [agent].timeout_sec in task.toml).
-BUDGET_MIN=150
+# Prints time used and remaining in the agent's budget (must match [agent].timeout_sec in task.toml), and GPU use.
+# --brief prints one line, for the PostToolUse status hook.
+BUDGET_MIN=120
 used=$(( ($(date +%s) - $(cat /app/.agent_start)) / 60 ))
-echo "Used $used of $BUDGET_MIN minutes; $((BUDGET_MIN - used)) minutes left"
+read -r util mem total < <(nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits | tr -d ' ' | tr ',' ' ')
+# Over the last 30 minutes of samples (one per 30 s): minutes with the GPU idle (<5% utilization), and mean memory
+read -r idle_min mean_mem span_min < <(awk -v since=$(( $(date +%s) - 1800 )) \
+    '$1 >= since { n++; if ($2 < 5) idle++; mem += $3 } END { printf "%d %d %d\n", idle / 2, n ? mem / n : 0, n / 2 }' \
+    /var/tmp/ao_gpu.log)
+gpu="GPU now ${util}% util, $((mem / 1024))/$((total / 1024)) GB; last ${span_min} min: idle ${idle_min} min, mean $((mean_mem / 1024)) GB"
+if [ "${1:-}" = "--brief" ]; then
+    echo "[$used/$BUDGET_MIN min used | $gpu]"
+else
+    echo "Used $used of $BUDGET_MIN minutes; $((BUDGET_MIN - used)) minutes left"
+    echo "$gpu"
+fi

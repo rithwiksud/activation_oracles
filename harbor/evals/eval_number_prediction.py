@@ -1,6 +1,8 @@
-"""Number Prediction eval (held out, verifier image only): the oracle reads the base model's activations on an arithmetic
-question (last 10 tokens, which exclude the digits) and must name the two operands. Score per item = fraction of the
-two operands that appear in the answer as whole numbers.
+"""Number Prediction eval (held out, verifier image only), scored like AOBench's (japhba/activation_oracles,
+nl_probes/open_ended_eval/number_prediction.py), except that the oracle reads the base model's activations on the full
+sequence of "What is {expr}? Answer with just the number, nothing else." (AOBench reads the last 10 tokens). It must
+predict the number the model is about to answer. Each problem is asked with AOBench's three questions; a response is correct if its first integer equals the model's
+answer. Accuracy is AOBench's matches_model_answer_rate.
 
 Usage: python eval_number_prediction.py --oracle-lora <adapter dir> [--output results.json]
 """
@@ -10,9 +12,13 @@ import json
 import re
 from dataclasses import asdict
 
-from ao_eval_common import VerbalizerInputInfo, load_base_model, run_oracle
+from ao_eval_common import VerbalizerInputInfo, load_base_model, response, run_oracle
 
-QUESTION = "Answer with the numbers only. What numbers appear in the arithmetic problem?"
+QUESTIONS = [
+    "What number is the model about to output?",
+    "What number is the model planning to answer with?",
+    "Predict the exact numerical answer the model will give.",
+]
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--oracle-lora", required=True)
@@ -25,25 +31,21 @@ items = json.load(open(args.items))[: args.max_items]
 infos = [
     VerbalizerInputInfo(
         context_prompt=[{"role": "user", "content": it["prompt"]}],
-        verbalizer_prompt=QUESTION,
-        ground_truth=f"{it['a']} {it['b']}",
+        verbalizer_prompt=question,
+        ground_truth=str(it["model_answer"]),
     )
     for it in items
+    for question in QUESTIONS
 ]
 
 model, tokenizer = load_base_model()
-results = run_oracle(model, tokenizer, args.oracle_lora, None, infos, max_new_tokens=20)
+results = run_oracle(model, tokenizer, args.oracle_lora, None, infos, max_new_tokens=20, input_type="full_seq")
 
-scores = []
-for it, r in zip(items, results, strict=True):
-    (response,) = r.segment_responses
-    found = [bool(re.search(rf"(?<!\d){n}(?!\d)", response)) for n in (it["a"], it["b"])]
-    scores.append(sum(found) / 2)
-summary = {
-    "accuracy": sum(scores) / len(scores),
-    "both_correct": sum(s == 1 for s in scores) / len(scores),
-    "n": len(scores),
-}
+correct = []
+for r in results:
+    match = re.search(r"-?\d+", response(r).strip())
+    correct.append(match is not None and int(match.group()) == int(r.ground_truth))
+summary = {"accuracy": sum(correct) / len(correct), "n": len(correct)}
 print(json.dumps(summary, indent=2))
 
 if args.output is not None:

@@ -6,11 +6,13 @@ artifacts = [
     "sft_training_data", "checkpoints*", "oracle_out", "wandb", "sft_outputs", "__pycache__",
     "*.pt", "*.safetensors", "*.bin", "*.npy",
   ] },
+  # Eval sidecar logs (per-call record and each eval's output), for diagnosing failed eval calls after the trial
+  { source = "/var/log/ao_eval", destination = "eval_server_logs", service = "eval-server" },
 ]
 
 [task]
-name = "local/ao-personaqa-hillclimb"
-description = "Improve activation oracle training for Qwen3.5-0.8B on PersonaQA; scored on a held-out task."
+name = "local/ao-hillclimb"
+description = "Improve activation oracle training for Qwen3.5-0.8B; scored on held-out tasks."
 
 [metadata]
 category = "ml-research"
@@ -21,7 +23,7 @@ gpus = 1
 # Training runs log to wandb (astro-imagen/activation_oracles); values come from the host env (--env-file)
 env = { WANDB_MODE = "online", WANDB_API_KEY = "${WANDB_API_KEY}", WANDB_ENTITY = "${WANDB_ENTITY}", WANDB_TAGS = "harbor-agent" }
 
-# The only way to score an oracle on the dev/validation tasks (capped; see environment/docker-compose.yaml). The
+# The only way to score an oracle on the validation tasks (capped; see environment/docker-compose.yaml). The
 # eval sidecar shares the egress sidecar's network namespace with the agent, hence localhost.
 [[environment.mcp_servers]]
 name = "ao-eval"
@@ -29,7 +31,7 @@ transport = "streamable-http"
 url = "http://localhost:8000/mcp"
 
 [agent]
-timeout_sec = 9000
+timeout_sec = 7200
 # Only the Claude API and wandb (plus the eval sidecar on localhost); models and data are preloaded and the HF hub is
 # unreachable
 network_mode = "allowlist"
@@ -37,7 +39,9 @@ allowed_hosts = ["api.anthropic.com", "api.wandb.ai"]
 
 [verifier]
 timeout_sec = 4200
-env = { WANDB_MODE = "online", WANDB_API_KEY = "${WANDB_API_KEY}", WANDB_ENTITY = "${WANDB_ENTITY}", WANDB_TAGS = "harbor-verifier" }
+# The retrain runs with wandb offline (tests/test.sh): table-artifact uploads at exit once stalled a finished retrain
+# past the time limit
+env = { WANDB_MODE = "offline", WANDB_API_KEY = "${WANDB_API_KEY}", WANDB_ENTITY = "${WANDB_ENTITY}", WANDB_TAGS = "harbor-verifier" }
 
 [verifier.environment]
 docker_image = "ao-verifier:latest"

@@ -6,6 +6,7 @@ import gc
 import json
 import math
 import random
+from collections import defaultdict
 import time
 from datetime import timedelta
 
@@ -54,7 +55,8 @@ from nl_probes.utils.dataset_utils import (
     construct_batch,
     materialize_missing_steering_vectors,
 )
-from nl_probes.utils.eval import run_evaluation, score_eval_responses
+from nl_probes.utils.eval import parse_answer, run_evaluation, score_eval_responses
+from nl_probes.utils.wandb_logging import examples_table, format_example, per_example_token_losses, task_group
 
 
 def push_lora_to_hf(
@@ -205,9 +207,9 @@ def train_features_batch(
     submodule: torch.nn.Module,
     device: torch.device,
     dtype: torch.dtype,
-) -> torch.Tensor:
+):
     """
-    Trains the model on a single batch of data.
+    Forward pass on a single batch with activations injected. Returns the model output (loss and logits).
     """
 
     batch_steering_vectors = training_batch.steering_vectors
@@ -228,9 +230,43 @@ def train_features_batch(
     }
 
     with add_hook(submodule, hook_fn):
-        loss = model(**tokenized_input, labels=training_batch.labels).loss
+        outputs = model(**tokenized_input, labels=training_batch.labels)
 
-    return loss
+    return outputs
+
+
+def eval_generation_kwargs(cfg: SelfInterpTrainingConfig, model, tokenizer: PreTrainedTokenizer) -> dict:
+    """Stop at the end of the assistant turn. Qwen3.5 ships no generation_config and its model config only stops at
+    <|endoftext|>, so a trained oracle (whose targets end in <|im_end|>\\n) runs on into a new turn and fails the exact
+    yes/no format check. Add the tokenizer's eos (<|im_end|>) to whatever the model already stops on."""
+    model_eos = model.generation_config.eos_token_id
+    model_eos = model_eos if isinstance(model_eos, list) else [model_eos]
+    return {**cfg.generation_kwargs, "eos_token_id": sorted(set(model_eos) | {tokenizer.eos_token_id})}
+
+
+def training_examples_table(
+    cfg: SelfInterpTrainingConfig,
+    points: list[TrainingDataPoint],
+    model: AutoModelForCausalLM,
+    tokenizer: PreTrainedTokenizer,
+    submodule: torch.nn.Module,
+    device: torch.device,
+    dtype: torch.dtype,
+    global_step: int,
+):
+    """The oracle's current answers on a fixed sample of training examples, to watch them change over training."""
+    model.eval()
+    responses = run_evaluation(
+        eval_data=points, model=model, tokenizer=tokenizer, submodule=submodule, device=device, dtype=dtype,
+        global_step=global_step, lora_path=None, eval_batch_size=cfg.eval_batch_size,
+        steering_coefficient=cfg.steering_coefficient, generation_kwargs=eval_generation_kwargs(cfg, model, tokenizer),
+    )
+    model.train()
+    rows = [
+        {"step": global_step, "task": dp.datapoint_type, **format_example(dp, tokenizer), "oracle answer": r.api_response}
+        for dp, r in zip(points, responses, strict=True)
+    ]
+    return examples_table(rows)
 
 
 def eval_all_datasets(
@@ -244,13 +280,9 @@ def eval_all_datasets(
     global_step: int,
 ) -> None:
     model.eval()
-    # Stop at the end of the assistant turn. Qwen3.5 ships no generation_config and its model config only stops at
-    # <|endoftext|>, so a trained oracle (whose targets end in <|im_end|>\n) runs on into a new turn and fails the
-    # exact yes/no format check. Add the tokenizer's eos (<|im_end|>) to whatever the model already stops on.
-    model_eos = model.generation_config.eos_token_id
-    model_eos = model_eos if isinstance(model_eos, list) else [model_eos]
-    generation_kwargs = {**cfg.generation_kwargs, "eos_token_id": sorted(set(model_eos) | {tokenizer.eos_token_id})}
+    generation_kwargs = eval_generation_kwargs(cfg, model, tokenizer)
     eval_results = {}
+    example_rows = []
     for ds in eval_datasets:
         eval_responses = run_evaluation(
             eval_data=eval_datasets[ds],
@@ -269,11 +301,14 @@ def eval_all_datasets(
         eval_results[f"eval_format_correct/{ds}"] = percent_format_correct
         eval_results[f"eval_ans_correct/{ds}"] = percent_ans_correct
         print(f"Step {global_step} {ds} format correct: {percent_format_correct}, ans correct: {percent_ans_correct}")
+        for dp, r in list(zip(eval_datasets[ds], eval_responses))[: cfg.eval_examples_per_dataset]:
+            correct = parse_answer(r.api_response) == parse_answer(dp.target_output)
+            example_rows.append(
+                {"step": global_step, "dataset": ds, **format_example(dp, tokenizer), "oracle answer": r.api_response,
+                 "correct": "✓" if correct else "✗"}
+            )
 
-    wandb.log(
-        eval_results,
-        step=global_step,
-    )
+    wandb.log({**eval_results, "eval_examples": examples_table(example_rows)}, step=global_step)
     wandb.summary.update(eval_results)
     model.train()
 
@@ -302,8 +337,11 @@ def oom_preflight_check(
     dummy_optimizer = torch.optim.AdamW(model.parameters(), lr=0.0)
 
     for _ in tqdm(range(3), desc="OOM preflight check"):
-        loss = train_features_batch(cfg, largest_possible_batch, model, submodule, device, dtype)
-        loss.backward()
+        outputs = train_features_batch(cfg, largest_possible_batch, model, submodule, device, dtype)
+        # Include the per-example loss computation the training loop does, so its memory is covered
+        per_example_token_losses(outputs.logits, largest_possible_batch.labels)
+        outputs.loss.backward()
+        del outputs
         dummy_optimizer.step()
         dummy_optimizer.zero_grad()
 
@@ -432,6 +470,17 @@ def train_model(
         )
     rank_batches = rank_batches[:batches_per_epoch]
 
+    # Aggregate losses over one megabatch cycle: batches are length-grouped, and length correlates with task, so the
+    # per-step loss swings with batch composition. A megabatch holds the whole task mix.
+    avg_rows = sum(len(b) for b in rank_batches) / len(rank_batches)
+    log_window = max(1, round(cfg.window_mult * cfg.train_batch_size / avg_rows))
+    window_losses: defaultdict[str, list[float]] = defaultdict(lambda: [0.0, 0.0])
+    # A fixed sample of training examples (two per task) whose oracle answers are logged as training goes on
+    example_points: list[TrainingDataPoint] = []
+    for dp in training_data:
+        if sum(task_group(e.datapoint_type) == task_group(dp.datapoint_type) for e in example_points) < 2:
+            example_points.append(dp)
+
     steps_per_epoch = batches_per_epoch // cfg.gradient_accumulation_steps
     assert steps_per_epoch > 0, "No optimizer steps will be run; check dataset/batch/accumulation sizes"
     total_training_steps = steps_per_epoch * cfg.num_epochs
@@ -480,7 +529,15 @@ def train_model(
             padded_tokens_trained += t_batch.input_ids.numel()
 
             # Forward/backward on the DDP-wrapped module if enabled
-            loss = train_features_batch(cfg, t_batch, train_model_module, submodule, device, dtype)
+            outputs = train_features_batch(cfg, t_batch, train_model_module, submodule, device, dtype)
+            loss_sums, token_counts = per_example_token_losses(outputs.logits, t_batch.labels)
+            for dp, loss_sum, count in zip(t_batch_list, loss_sums.tolist(), token_counts.tolist(), strict=True):
+                for key in ("train/loss_megabatch", f"train_loss_by_task/{task_group(dp.datapoint_type)}",
+                            f"train_loss_by_dataset/{dp.datapoint_type}"):
+                    window_losses[key][0] += loss_sum
+                    window_losses[key][1] += count
+            loss = outputs.loss
+            del outputs
             loss = loss / cfg.gradient_accumulation_steps
             loss.backward()
             accumulated_loss += loss.item()
@@ -488,19 +545,35 @@ def train_model(
             is_update_step = (step_idx + 1) % cfg.gradient_accumulation_steps == 0
 
             if is_update_step:
-                clip_grad_norm_(train_model_module.parameters(), cfg.max_grad_norm)
+                grad_norm = clip_grad_norm_(train_model_module.parameters(), cfg.max_grad_norm)
                 optimizer.step()
                 scheduler.step()
                 optimizer.zero_grad()
 
                 if rank == 0:
-                    wandb.log(
-                        {
-                            "train/loss": accumulated_loss,
-                            "train/learning_rate": scheduler.get_last_lr()[0],
-                        },
-                        step=global_step,
-                    )
+                    elapsed = time.time() - train_start_time
+                    log = {
+                        "train/loss": accumulated_loss,
+                        "train/learning_rate": scheduler.get_last_lr()[0],
+                        "train/grad_norm": grad_norm.item(),
+                        "train/batch_rows": len(t_batch_list),
+                        "train/batch_padded_tokens": t_batch.input_ids.numel(),
+                        "train/padded_tokens_per_sec": padded_tokens_trained / elapsed,
+                        # Peak memory of this step, including activation collection: how well the batch fills the GPU
+                        "train/peak_mem_gb": torch.cuda.max_memory_allocated() / 2**30,
+                        "train/peak_mem_frac": torch.cuda.max_memory_allocated()
+                        / torch.cuda.get_device_properties(device).total_memory,
+                    }
+                    torch.cuda.reset_peak_memory_stats()
+                    if (global_step + 1) % log_window == 0:
+                        # Token-weighted mean loss over the last megabatch, overall and per task
+                        log.update({k: loss_sum / count for k, (loss_sum, count) in window_losses.items()})
+                        window_losses.clear()
+                    if global_step % cfg.example_log_steps == 0:
+                        log["train_examples"] = training_examples_table(
+                            cfg, example_points, model, tokenizer, submodule, device, dtype, global_step
+                        )
+                    wandb.log(log, step=global_step)
                     if verbose:
                         print(f"Step {global_step} loss: {accumulated_loss}")
                     if global_step % 50 == 0:

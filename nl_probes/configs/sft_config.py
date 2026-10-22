@@ -43,6 +43,8 @@ class SelfInterpTrainingConfig:
     gradient_accumulation_steps: int = 1
     max_grad_norm: float = 1.0
     eval_steps: int = 9_999_999  # effectively off by default
+    example_log_steps: int = 200  # how often to log the oracle's answers on a fixed sample of training examples
+    eval_examples_per_dataset: int = 3  # example rows per eval dataset in the eval_examples wandb table
     eval_on_start: bool = False
     gradient_checkpointing: bool = False
     window_mult: int = 20

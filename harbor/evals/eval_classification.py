@@ -1,6 +1,9 @@
-"""OOD classification eval: yes/no classification datasets the oracle never trains on by default (ag_news,
-language_identification, singular_plural), scored with nl_probes' own eval code. Uses the cached test sets that
-nl_probes builds (single- and multi-token windows).
+"""OOD classification eval, the AO paper's protocol (experiments/classification_eval.py at commit 0606a87 and
+experiments/plotting/plot_classification_eval.py): the paper's 7 held-out yes/no classification datasets (App. C.3),
+activations of the full sequence (the paper reads a single token) at layers 25/50/75%, greedy answers of up to 10
+tokens. A response
+is correct if it contains the target ("yes" / "no"), case-insensitive, and accuracy is pooled over all items of all
+datasets, as the paper's OOD average is. The test sets are built by harbor/scripts/build_classification_test_sets.py.
 
 Usage: python eval_classification.py --oracle-lora <adapter dir> --data-dir <dir with the cached .pt test sets>
 """
@@ -18,14 +21,26 @@ from peft import PeftModel
 from nl_probes.utils.activation_utils import get_hf_submodule
 from nl_probes.utils.common import load_model, load_tokenizer
 from nl_probes.utils.dataset_utils import TrainingDataPoint
-from nl_probes.utils.eval import run_evaluation, score_eval_responses
+from nl_probes.utils.eval import run_evaluation
 
 MODEL_NAME = "Qwen/Qwen3.5-0.8B"
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--oracle-lora", required=True)
 parser.add_argument("--data-dir", required=True)
-parser.add_argument("--datasets", nargs="+", default=["ag_news", "language_identification", "singular_plural"])
+parser.add_argument(
+    "--datasets",
+    nargs="+",
+    default=[
+        "ag_news",
+        "language_identification",
+        "singular_plural",
+        "engels_headline_istrump",
+        "engels_headline_isobama",
+        "engels_headline_ischina",
+        "engels_hist_fig_ismale",
+    ],
+)
 parser.add_argument("--max-items", type=int, default=None, help="per dataset; for smoke tests")
 parser.add_argument("--output", default=None)
 args = parser.parse_args()
@@ -36,7 +51,7 @@ submodule = get_hf_submodule(model, 1, use_lora=True)
 # Stop at the end of the assistant turn (Qwen3.5's model config only stops at <|endoftext|>)
 generation_kwargs = {
     "do_sample": False,
-    "max_new_tokens": 20,
+    "max_new_tokens": 10,
     "eos_token_id": sorted({model.generation_config.eos_token_id, tokenizer.eos_token_id}),
 }
 
@@ -50,10 +65,17 @@ for ds in args.datasets:
         dtype=torch.bfloat16, global_step=-1, lora_path=None, eval_batch_size=256, steering_coefficient=1.0,
         generation_kwargs=generation_kwargs,
     )
-    _, accuracy = score_eval_responses(responses, data)
-    by_dataset[ds] = accuracy
+    by_dataset[ds] = [
+        dp.target_output.lower().strip() in r.api_response.lower().strip()
+        for r, dp in zip(responses, data, strict=True)
+    ]
 
-summary = {"accuracy": sum(by_dataset.values()) / len(by_dataset), "by_dataset": by_dataset}
+pooled = [c for cs in by_dataset.values() for c in cs]
+summary = {
+    "accuracy": sum(pooled) / len(pooled),
+    "by_dataset": {ds: sum(cs) / len(cs) for ds, cs in by_dataset.items()},
+    "n": len(pooled),
+}
 print(json.dumps(summary, indent=2))
 if args.output is not None:
     json.dump({"summary": summary}, open(args.output, "w"), indent=2)

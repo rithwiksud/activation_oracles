@@ -6,6 +6,6 @@ RUN uv pip install --python /opt/venv/bin/python mcp==1.30.0 && rm -rf /root/.ca
 COPY ao_targets/ /opt/ao_targets/
 COPY ao_eval/ /opt/ao_eval/
 COPY eval_server/ /opt/eval_server/
-ENV AO_EVAL_MAX_DEV_CALLS=100 AO_EVAL_MAX_VAL_CALLS=10 AO_EVAL_SMOKE=0
+ENV AO_EVAL_MAX_VAL_CALLS=30 AO_EVAL_SMOKE=0
 EXPOSE 8000
 CMD ["python", "/opt/eval_server/server.py"]
