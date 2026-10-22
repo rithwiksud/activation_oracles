@@ -31,7 +31,7 @@ transport = "streamable-http"
 url = "http://localhost:8000/mcp"
 
 [agent]
-timeout_sec = 7200
+timeout_sec = 14400
 # Only the Claude API and wandb (plus the eval sidecar on localhost); models and data are preloaded and the HF hub is
 # unreachable
 network_mode = "allowlist"

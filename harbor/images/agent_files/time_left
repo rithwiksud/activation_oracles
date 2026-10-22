@@ -1,7 +1,7 @@
 #!/bin/bash
 # Prints time used and remaining in the agent's budget (must match [agent].timeout_sec in task.toml), and GPU use.
 # --brief prints one line, for the PostToolUse status hook.
-BUDGET_MIN=120
+BUDGET_MIN=240
 used=$(( ($(date +%s) - $(cat /app/.agent_start)) / 60 ))
 read -r util mem total < <(nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits | tr -d ' ' | tr ',' ' ')
 # Over the last 30 minutes of samples (one per 30 s): minutes with the GPU idle (<5% utilization), and mean memory

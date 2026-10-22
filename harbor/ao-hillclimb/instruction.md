@@ -11,7 +11,7 @@ Two tiers of tasks. You can score the first (through an eval tool, below); the s
 1. **Validation metrics:**
    - **Taboo.** 20 target LoRAs were each fine-tuned to play a word game: give hints about one secret word without
      ever saying it. The oracle sees activations of a user message to the target and must name the secret word.
-     Baseline: about 10%.
+     Baseline: about 24%.
    - **OOD classification.** Seven yes/no classification datasets that aren't in the training mixture (news topic,
      which language a text is in, whether a noun is singular or plural, whether a headline is about a given person or
      country, whether a historical figure is male), scored as one pooled accuracy. Baseline: about 70% (chance
@@ -78,8 +78,9 @@ prompts from the ones the tool uses, so don't tune to tiny Taboo differences.
   at 50 minutes and scores 0. The baseline takes about 33 minutes (about 8 of them building datasets).
 - **Stay compatible with the reference inference code.** Evaluation uses an unmodified copy of the repo
   (`/opt/ao_ref`), not your copy. It loads your adapter onto Qwen/Qwen3.5-0.8B, collects activations and injects them
-  at layer 1 with the standard additive hook and the `"Layer: {L}\n" + " ?" * N` prompt prefix. Every task feeds
-  the oracle the activations of the full context (every token); open-ended tasks read layer 12 (50% depth),
+  at layer 1 with the standard additive hook and the `"Layer: {L}\n" + " ?" * N` prompt prefix. Taboo feeds the
+  oracle the activations of the last 10 context tokens; every other task feeds the full context (every token).
+  Open-ended tasks read layer 12 (50% depth),
   classification reads layers 6, 12 and 18 (25/50/75%). Answers are scored by whether they contain the correct value. You can change anything about *training* (data, mixture, losses,
   hyperparameters, new data generators, layers you train on), but the trained adapter must work with that inference
   path.
@@ -89,7 +90,7 @@ prompts from the ones the tool uses, so don't tune to tiny Taboo differences.
 
 ## How to work
 
-- You have **2 hours** in total, and the session ends hard at the limit. Run `time_left` to check your budget and
+- You have **4 hours** in total, and the session ends hard at the limit. Run `time_left` to check your budget and
   recent GPU use. You can't end the session before the last 15 minutes, so plan to use the whole time.
 - **Keep the GPU busy.** GPU time is your main resource, and a status line after each tool call shows how much of it
   went unused. Launch the next experiment (in the background, logging to a file) before analyzing the last one, and

@@ -18,21 +18,24 @@ to train on. Each run must finish in 40 minutes, and the inference path stays fi
 | **Training data** (agent has full access and can change it) | **LatentQA** | AO paper (training mix; data from Pan et al., LatentQA) | Base model given a hidden system prompt or persona → questions about that hidden instruction | Base | — (base model) | 6.5k examples | — (training only; no eval) | — (training data; not scored in either paper) |
 | | **Classification** (7 sets: true/false facts, relations, sentiment, gender, NLI, named entities, tense) | AO paper (training mix, its in-distribution sets) | A sentence → a yes/no question about it ("Is this statement true?") | Base | — (base model) | ~38k | 83.4% on their 250-sample test splits, scored during training (chance 50%) | IID ≈0.90 at layer 50% (Qwen3-8B, single token; AO paper Fig. 13, read off an unlabeled chart) |
 | | **PastLens** | AO paper (training mix, context prediction) | Activations at a few positions of web/chat text → reproduce the nearby words | Base | — (base model) | ~61k | — (training only; no eval) | — (training data; not scored in either paper) |
-| **Validation** (agent scores it; `evaluate_val`, 30 calls) | **Taboo** | AO paper (targets from Cywiński et al.; AOBench reuses it) | A user message to a model playing a secret-word game → "What is the secret word?" | **Fine-tuned** (20 targets, one secret word each) | Keeps the secret: says its word in 2.3% of replies to the direct test prompts (worst target 10%). Its hints carry the word: the base Qwen3.5-0.8B guesses the word from three hints for 35% of targets (a lower bound, given the weak guesser). Neither paper reports these numbers. | 3,000 queries (agent's tool: standard val prompts) / 6,000 (verifier: direct test prompts) | 10.0% (val prompts) / 1.0% (test prompts) | 0.285 (Qwen3-8B, full sequence, AO paper Fig. 12); 0.495 single token; untrained Qwen3-8B 0.192 (Fig. 19) |
+| **Validation** (agent scores it; `evaluate_val`, 30 calls) | **Taboo** | AO paper (targets from Cywiński et al.; AOBench reuses it) | A user message to a model playing a secret-word game → "What is the secret word?" | **Fine-tuned** (20 targets, one secret word each) | Keeps the secret: says its word in 2.3% of replies to the direct test prompts (worst target 10%). Its hints carry the word: the base Qwen3.5-0.8B guesses the word from three hints for 35% of targets (a lower bound, given the weak guesser). Neither paper reports these numbers. | 3,000 queries (agent's tool: standard val prompts) / 6,000 (verifier: direct test prompts) | 24.0% (val prompts) / 10.9% (test prompts) | 0.285 (Qwen3-8B, full sequence, AO paper Fig. 12); 0.495 single token; untrained Qwen3-8B 0.192 (Fig. 19) |
 | | **OOD classification** (the AO paper's 7 held-out sets: AG News topic, language ID, singular/plural, Headline: Trump / Obama / China, Historical Figure Is Male) | AO paper (its OOD generalization test, App. C.3; the headline and historical-figure sets are from Kantamneni et al.) | A news headline or sentence → a yes/no question about it ("Is this about business?", "Is this in French?", "Is this headline about China?") | Base | — (base model) | 15,750 queries (7 × 250 samples × 3 questions × 3 layers) | 69.9% pooled accuracy (chance 50%) | 0.700 (Qwen3-8B, single token, AO paper Fig. 7); our single-token baseline was 0.590 |
 | **Test** (held out, never seen by the agent) | **Number Prediction** | AOBench | "What is 37 * 12? Answer with just the number" → what number the model is about to answer | Base | — (base model; labels are its own answers) | 150 queries (50 problems × 3 questions) | 36.0% | +0.00 chance-adjusted for the AO-paper recipe, up to +0.20 for AOBench's best (last 10 tokens; Fig. 12). Our last-10-token baseline was also 0.0% |
 | | **MMLU Prediction** | AOBench | An MMLU question, before or after the model's answer letter → "Will the model answer / Is its answer correct?" (scored by yes/no logits) | Base | — (base model; 45.5% MMLU accuracy, labels are its own correctness) | 200 queries (100 questions, half answered correctly, × 2 questions) | 0.620 ROC AUC (chance 0.5) | +0.28 chance-adjusted AUC for the AO-paper recipe (AUC 0.64 or 0.78 depending on their formula), up to +0.58 (last 10 tokens; AOBench Fig. 12) |
 
 AO paper = Karvonen et al., arXiv 2512.15674. AOBench = Bauer et al., arXiv 2606.02609 (code: japhba/activation_oracles).
 
-Every eval uses its source paper's datasets, prompts and scoring, but the oracle always reads the **full sequence**
-(every context token), the AO paper's default input. The papers instead read one token for Taboo (the assistant
-header's `<|im_start|>`) and classification (3 tokens from the end), and the last 10 tokens for Number Prediction and
-MMLU Prediction (AOBench). Classification reads layers 25/50/75% as in the paper; the open-ended tasks read layer 50%.
+Every eval uses its source paper's datasets, prompts and scoring. The oracle reads the **full sequence** (every
+context token, the AO paper's default input) on every task except Taboo, which reads the **last 10 tokens**: the end of
+the user turn plus the assistant header. On the full sequence, the oracle echoes the direct prompts' own words
+("secret", "secret_word") instead of reading the target, so the capped baseline scores 1.0% there vs 10.9% on the last
+10 tokens. The papers read one token for Taboo (the assistant header's `<|im_start|>`, where our 0.8B oracles return
+empty answers) and classification (3 tokens from the end), and the last 10 tokens for Number Prediction and MMLU
+Prediction (AOBench). Classification reads layers 25/50/75% as in the paper; the open-ended tasks read layer 50%.
 Full-sequence input lets the oracle see the input text itself. Number Prediction and MMLU Prediction can then be
 partly solved from the text: the expression's digits, the question's difficulty. That is why Number Prediction jumps
 from 0% (last 10 tokens) to 36%. The papers' numbers use Qwen3-8B and full-size training data, so they are references,
-not targets. Baselines are the capped baseline oracle (2026-10-22 full-sequence rescore). The papers' own results for each dataset are in
+not targets. Baselines are the capped baseline oracle (2026-10-22 rescore). The papers' own results for each dataset are in
 the [appendix](#appendix-results-reported-in-the-source-papers).
 
 Only Taboo needs fine-tuned targets; they are trained once and verified. Every other dataset reads the unmodified base
@@ -44,7 +47,7 @@ in its training format, not when asked a question.
 
 | Dataset | Ours (capped Qwen3.5-0.8B baseline) | Paper (closest setting) | Verdict |
 |---|---|---|---|
-| Taboo | 1.0% (test prompts, full sequence) | 0.285 (Qwen3-8B, full sequence); untrained Qwen3-8B 0.192 | **Concerning.** Far below even the paper's untrained 8B model. Our targets look healthy (2.3% leak rate, 35% hint guessability), so the gap is the 0.8B oracle and the 10x smaller training mix, not the targets. The same oracle scores 10.0% on the standard val prompts. |
+| Taboo | 10.9% (test prompts, last 10 tokens) | 0.285 (Qwen3-8B, full sequence); 0.495 single token; untrained Qwen3-8B 0.192 | **Concerning.** Below the paper's untrained 8B model. The targets are healthy: they shift layer-12 activations by ~41%, give on-target hints for ~19 of 20 words, and leak their word in 2.6% of direct replies. The eval plumbing is fine too: 90% when the word is in the text, 0% from base-model activations. The gap is the 0.8B oracle's answer format: 30% of its direct-prompt answers are empty or punctuation-only. Doubling the training data (5x-reduced mix) didn't help: 10.9% again, with 64% non-answers. |
 | OOD classification | 69.9% (full sequence) | 0.700 (Qwen3-8B, single token) | Matches, but not like for like: full-sequence input lets the oracle read the sentence itself. Our single-token baseline was 59.0%, a plausible 11 points below the 8B model. Per dataset, the Trump headline set is at chance (50%) and Obama/China are near it (57–60%), while Historical Figure Is Male is 94%. |
 | Number Prediction | 36.0% (full sequence) | +0.00 for the AO-paper recipe (last 10 tokens) | Matches at the paper's read: ours was also 0.0% on the last 10 tokens. The 36% comes from reading the expression's tokens, not activations. |
 | MMLU Prediction | 0.620 AUC (full sequence) | +0.28 chance-adjusted (AUC 0.64–0.78), last 10 tokens | Plausibly below the 8B reference; weak but above chance. |
@@ -57,7 +60,7 @@ those requests are refused through a Claude subscription (usage-policy classifie
 
 ## Each trial in Harbor
 
-1. **Agent sandbox (2 hours):** the agent edits code and trains oracles on the GPU. It has no eval code, targets or
+1. **Agent sandbox (4 hours):** the agent edits code and trains oracles on the GPU. It has no eval code, targets or
    eval data.
 2. **Eval sidecar:** the agent copies an adapter to a shared folder and calls one MCP tool, `evaluate_val` (30
    calls): Taboo and the 7-dataset OOD classification set. It only ever gets back aggregate numbers.
@@ -90,7 +93,7 @@ the oracle.
 | Qwen3-8B | Classification only | 0.150 | Fig. 19 |
 | Qwen3-8B | LatentQA (SPQA) only | 0.116 | Fig. 19 |
 | Qwen3-8B | Original model | 0.192 | Fig. 19 |
-| **Qwen3-8B** | **Full dataset, 1M, full sequence (our protocol)** | **0.285** | Fig. 12 |
+| **Qwen3-8B** | **Full dataset, 1M, full sequence (closest to our protocol; the paper has no last-10-token Taboo result)** | **0.285** | Fig. 12 |
 | Gemma-2-9B | Full dataset, full sequence | 0.205 | Fig. 3; Figs. 12, 14, 20; text "21%" (Sec. 4.1) |
 | Gemma-2-9B | Full dataset, single token | 0.312 | Fig. 12 |
 | Gemma-2-9B | Full dataset, layer-75% input | 0.056 | Fig. 14 |

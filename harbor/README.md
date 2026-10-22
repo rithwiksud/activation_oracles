@@ -1,6 +1,6 @@
 # Harbor: autoresearch hill climbing for activation oracle training
 
-Claude Code (authenticated with a Claude subscription) works in a GPU sandbox for 2 hours per trial, improving
+Claude Code (authenticated with a Claude subscription) works in a GPU sandbox for 4 hours per trial, improving
 activation oracle training for Qwen3.5-0.8B. Its submission is then retrained from scratch in a separate verifier
 sandbox and scored.
 
@@ -23,7 +23,7 @@ paper's direct test prompts) and `ood_classification`. Held-out scores never go 
 | `images/` | Dockerfiles for `ao-base`, `ao-agent`, `ao-verifier` |
 | `scripts/build_classification_test_sets.py` | Builds the classification test sets with the AO paper's single-token protocol |
 | `build_images.sh` | Stages contexts under `$BUILD` (default `/home/ubuntu/ao_harbor_build`) and builds the images |
-| `evals/` | Eval scripts with each source paper's datasets, prompts and scoring; the oracle always reads the full sequence |
+| `evals/` | Eval scripts with each source paper's datasets, prompts and scoring; the oracle reads the full sequence, except for Taboo (last 10 tokens) |
 | `scripts/train_targets.py` | Trains the 20 Taboo target LoRAs for Qwen3.5-0.8B, once each (PersonaQA support is unused) |
 | `scripts/dump_pastlens_slices.py` | Dumps fineweb / lmsys-chat slices so PastLens works offline |
 | `repo_files/train.sh` | The submission entrypoint placed in the agent's repo |

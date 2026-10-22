@@ -2,8 +2,8 @@
 
 The oracle reads activations from a target LoRA (a fine-tune that holds hidden information), or from the base model, and
 answers an open-ended question. A response counts as correct if it contains the ground truth, case-insensitive. Every
-eval reads the full sequence (every context token), the AO paper's default input. Prompts and scoring follow each
-task's source paper.
+eval except Taboo reads the full sequence (every context token), the AO paper's default input; Taboo reads the last 10
+tokens. Prompts and scoring follow each task's source paper.
 """
 
 import os
