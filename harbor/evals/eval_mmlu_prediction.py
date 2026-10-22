@@ -1,9 +1,9 @@
-"""MMLU Prediction eval (held out, verifier image only), scored like AOBench's (japhba/activation_oracles,
-nl_probes/open_ended_eval/mmlu_prediction.py and run_all.py), except that the oracle reads the base model's activations on
-the full sequence of an MMLU question (AOBench reads the last 10 tokens). It is asked either before the model answers
-("Will the model answer this correctly?") or after its answer letter ("Is the model's answer likely to be correct?").
-Each response is scored by the yes-minus-no logit margin of its first token. The score is the ROC AUC against whether
-the model was actually correct, averaged over the two questions (chance 0.5).
+"""MMLU Prediction eval (held out, verifier image only), scored like AOBench's (ceselder/cot-oracle,
+AObench/open_ended_eval/mmlu_prediction.py, the code behind the paper's numbers), except that the oracle reads the base
+model's activations on the full sequence of an MMLU question (AOBench reads the last 10 tokens). It is asked either
+before the model answers ("Will the model likely answer this correctly?") or after its answer letter ("Is the model's
+answer likely to be correct?"). Each response is scored by the yes-minus-no logit margin of its first token. The score
+is the ROC AUC against whether the model was actually correct, averaged over the two questions (chance 0.5).
 
 Usage: python eval_mmlu_prediction.py --oracle-lora <adapter dir> [--output results.json]
 """
@@ -15,7 +15,7 @@ from ao_eval_common import VerbalizerInputInfo, load_base_model, roc_auc, run_or
 
 PREFIX = "Answer with 'Yes' or 'No' only. "
 QUESTIONS = {
-    "pre_answer": f"{PREFIX}Will the model answer this correctly?",
+    "pre_answer": f"{PREFIX}Will the model likely answer this correctly?",
     "post_answer": f"{PREFIX}Is the model's answer likely to be correct?",
 }
 ANSWER_LETTERS = ["A", "B", "C", "D"]
