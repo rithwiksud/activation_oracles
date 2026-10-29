@@ -38,10 +38,12 @@ def render(prompt: str) -> str:
 
 # ---- Number Prediction ----
 items = json.load(open(f"{heldout_dir}/number_prediction_aobench.json"))
-enc = tok([render(it["prompt"]) for it in items], return_tensors="pt", padding=True, add_special_tokens=False).to("cuda")
-with torch.no_grad():
-    gen = model.generate(**enc, max_new_tokens=50, do_sample=False, eos_token_id=tok.eos_token_id)
-answers = [re.search(r"-?\d+", a.strip()) for a in tok.batch_decode(gen[:, enc["input_ids"].shape[1] :], skip_special_tokens=True)]
+answers = []
+for it in items:  # unpadded, as the labels were generated
+    enc = tok(render(it["prompt"]), return_tensors="pt", add_special_tokens=False).to("cuda")
+    with torch.no_grad():
+        gen = model.generate(**enc, max_new_tokens=50, do_sample=False, eos_token_id=tok.eos_token_id)
+    answers.append(re.search(r"-?\d+", tok.decode(gen[0, enc["input_ids"].shape[1] :], skip_special_tokens=True).strip()))
 metrics["number_prediction/label_reproduction_rate"] = sum(
     a is not None and int(a.group()) == it["model_answer"] for a, it in zip(answers, items, strict=True)
 ) / len(items)

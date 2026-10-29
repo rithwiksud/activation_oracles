@@ -1,7 +1,10 @@
 """Held-out Number Prediction data, built exactly like AOBench's (japhba/activation_oracles,
-data_pipelines/number_prediction/generate_dataset.py): the same 50 arithmetic problems (same generator and seed, checked
-against AOBench's Qwen3-8B dataset when its path is given), answered by Qwen3.5-0.8B greedily with thinking disabled. The
+data_pipelines/number_prediction/generate_dataset.py), answered by Qwen3.5-0.8B greedily with thinking disabled. The
 oracle later reads the activations of the question and must predict the model's own answer.
+
+AOBench's 50 problems are too few to tell oracles apart, so its generator (same seed) is run for N_ROUNDS rounds,
+continuing the same random stream. The first round reproduces AOBench's 50 problems (checked against its Qwen3-8B dataset
+when its path is given); later rounds add new problems from the same distribution, with repeated expressions dropped.
 
 Usage: python make_number_prediction.py <out.json> [<AOBench Qwen3-8B number_prediction_eval_dataset.json>]
 """
@@ -16,6 +19,7 @@ import torch
 from nl_probes.utils.common import load_model, load_tokenizer
 
 MODEL_NAME = "Qwen/Qwen3.5-0.8B"
+N_ROUNDS = 8
 
 
 def user_prompt(expression: str) -> str:
@@ -83,10 +87,16 @@ def generate_problems():
 
 
 out_path = sys.argv[1]
-problems = generate_problems()
+rounds = [generate_problems() for _ in range(N_ROUNDS)]
 if len(sys.argv) > 2:
     reference = [e["expression"] for e in json.load(open(sys.argv[2]))["entries"]]
-    assert [p["expression"] for p in problems] == reference, "problems differ from AOBench's"
+    assert [p["expression"] for p in rounds[0]] == reference, "problems differ from AOBench's"
+problems, seen = [], set()
+for r, round_problems in enumerate(rounds):
+    for p in round_problems:
+        if p["expression"] not in seen:
+            seen.add(p["expression"])
+            problems.append({**p, "id": f"{p['id']}_r{r}"})
 
 tokenizer = load_tokenizer(MODEL_NAME)
 model = load_model(MODEL_NAME, torch.bfloat16).eval()
@@ -99,10 +109,14 @@ prompts = [
     )
     for p in problems
 ]
-enc = tokenizer(prompts, return_tensors="pt", padding=True, add_special_tokens=False).to("cuda")
-with torch.no_grad():
-    out = model.generate(**enc, max_new_tokens=50, do_sample=False, eos_token_id=tokenizer.eos_token_id)
-responses = tokenizer.batch_decode(out[:, enc["input_ids"].shape[1] :], skip_special_tokens=True)
+# One prompt at a time: padding in a batch changes the greedy answer on near-tie problems, so a batched label would
+# depend on what else was in the batch
+responses = []
+for prompt in prompts:
+    enc = tokenizer(prompt, return_tensors="pt", add_special_tokens=False).to("cuda")
+    with torch.no_grad():
+        out = model.generate(**enc, max_new_tokens=50, do_sample=False, eos_token_id=tokenizer.eos_token_id)
+    responses.append(tokenizer.decode(out[0, enc["input_ids"].shape[1] :], skip_special_tokens=True))
 
 entries = []
 for p, raw in zip(problems, responses, strict=True):

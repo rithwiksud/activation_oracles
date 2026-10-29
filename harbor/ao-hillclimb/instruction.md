@@ -11,7 +11,8 @@ Two tiers of tasks. You can score the first (through an eval tool, below); the s
 1. **Validation metrics:**
    - **Taboo.** 20 target LoRAs were each fine-tuned to play a word game: give hints about one secret word without
      ever saying it. The oracle sees activations of a user message to the target and must name the secret word.
-     Baseline: about 24%.
+     Scored strictly: the first word of the answer must be the secret word. Baseline: about 16%, but it ranges from 9% to 20% across training seeds (mostly
+     through answer format), so treat single-run differences of a few points as noise.
    - **OOD classification.** Seven yes/no classification datasets that aren't in the training mixture (news topic,
      which language a text is in, whether a noun is singular or plural, whether a headline is about a given person or
      country, whether a historical figure is male), scored as one pooled accuracy. Baseline: about 70% (chance
@@ -62,7 +63,7 @@ cp -r oracle_out /shared/baseline   # then call evaluate_val(adapter_name="basel
 
 | Tool | Returns | Budget |
 | - | - | - |
-| `evaluate_val` | Taboo and OOD classification accuracy, about 5-7 minutes | **30 calls** |
+| `evaluate_val` | Taboo and OOD classification accuracy, plus answer-format stats (Taboo's share of empty answers and the mean answer length for both), about 5-7 minutes | **30 calls** |
 
 Calls that fail (for example a malformed adapter) still count. Eval runs on the same GPU, so you can keep training
 while one runs. The verifier scores Taboo on a different set of
@@ -78,10 +79,13 @@ prompts from the ones the tool uses, so don't tune to tiny Taboo differences.
   at 50 minutes and scores 0. The baseline takes about 33 minutes (about 8 of them building datasets).
 - **Stay compatible with the reference inference code.** Evaluation uses an unmodified copy of the repo
   (`/opt/ao_ref`), not your copy. It loads your adapter onto Qwen/Qwen3.5-0.8B, collects activations and injects them
-  at layer 1 with the standard additive hook and the `"Layer: {L}\n" + " ?" * N` prompt prefix. Taboo feeds the
-  oracle the activations of the last 10 context tokens; every other task feeds the full context (every token).
+  at layer 1 with the standard additive hook and the `"Layer: {L}\n" + " ?" * N` prompt prefix. Some tasks feed the
+  oracle the activations of the last 10 context tokens (Taboo is one); others feed the full context (every token).
   Open-ended tasks read layer 12 (50% depth),
-  classification reads layers 6, 12 and 18 (25/50/75%). Answers are scored by whether they contain the correct value. You can change anything about *training* (data, mixture, losses,
+  classification reads layers 6, 12 and 18 (25/50/75%). **Answers are scored strictly on how they start:** the
+  held-out tasks read only the first number or word of the answer, or the yes/no logits of its first token, and Taboo
+  takes the first word. An oracle that answers in full sentences ("The secret word is ...") loses most of its score.
+  OOD classification is the exception: it uses the paper's scoring, where the answer must contain "yes" or "no". You can change anything about *training* (data, mixture, losses,
   hyperparameters, new data generators, layers you train on), but the trained adapter must work with that inference
   path.
 - **Eval tasks are metrics, not training data.** Don't build training data that recreates the Taboo or OOD

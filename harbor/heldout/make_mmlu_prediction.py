@@ -1,6 +1,7 @@
 """Held-out MMLU Prediction data, built like AOBench's (japhba/activation_oracles,
 data_pipelines/mmlu_prediction/generate_dataset.py): Qwen3.5-0.8B answers every MMLU test question greedily with thinking
-disabled, then 50 questions it got right and 50 it got wrong are sampled (same seed and shuffles as AOBench). The oracle
+disabled, then questions it got right and questions it got wrong are sampled in equal numbers (same seed and shuffles
+as AOBench). AOBench samples 50 of each; we take 500 of each, since 100 items put the AUC's standard error near 0.06. The oracle
 later reads the activations of the question (before the answer) or of the question plus the model's answer letter
 (after it), and must say whether the model is / was correct.
 
@@ -18,7 +19,7 @@ from datasets import load_dataset
 from nl_probes.utils.common import load_model, load_tokenizer
 
 MODEL_NAME = "Qwen/Qwen3.5-0.8B"
-TARGET_PER_CLASS = 50
+TARGET_PER_CLASS = 500
 ANSWER_LETTERS = ["A", "B", "C", "D"]
 BATCH_SIZE = 64
 

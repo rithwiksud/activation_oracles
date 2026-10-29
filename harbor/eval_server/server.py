@@ -25,6 +25,8 @@ EVALS = {
     "taboo": [f"{EVAL_DIR}/eval_taboo.py"],
     "ood_classification": [f"{EVAL_DIR}/eval_classification.py", "--data-dir", f"{EVAL_DIR}/classification_test"],
 }
+# Summary fields returned per task besides accuracy: the answer format, so a wordy or collapsed oracle is visible
+EXTRA_FIELDS = {"taboo": ["non_answer_rate", "mean_answer_chars"], "ood_classification": ["mean_answer_chars"]}
 BUDGETS = {"val": int(os.environ["AO_EVAL_MAX_VAL_CALLS"])}
 # Smoke tests score a handful of items per eval (set only by the smoke-test task)
 if os.environ["AO_EVAL_SMOKE"] == "1":
@@ -78,7 +80,10 @@ def _run_evals(kind: str, adapter_name: str, tasks: list[str]) -> dict:
                             "too little. This call was not counted. Free some GPU memory and call again."
                         )
                     raise subprocess.CalledProcessError(proc.returncode, proc.args)
-                scores[task] = round(json.load(open(out))["summary"]["accuracy"], 4)
+                summary = json.load(open(out))["summary"]
+                scores[task] = round(summary["accuracy"], 4)
+                for field in EXTRA_FIELDS[task]:
+                    scores[f"{task}_{field}"] = round(summary[field], 4)
         return {**scores, "calls_remaining": BUDGETS[kind] - calls_used[kind]}
 
 
@@ -87,8 +92,9 @@ def evaluate_val(adapter_name: str) -> dict:
     """Score an activation oracle LoRA adapter for Qwen/Qwen3.5-0.8B on the validation metrics.
 
     First copy the adapter directory (adapter_config.json + adapter_model.safetensors) to /shared/<adapter_name>.
-    Returns {"taboo": accuracy, "ood_classification": accuracy (pooled over 7 held-out yes/no classification datasets),
-    "calls_remaining": n}. Takes about 5-7 minutes.
+    Returns {"taboo": accuracy (the first word of the answer must be the secret word), "taboo_non_answer_rate",
+    "taboo_mean_answer_chars", "ood_classification": accuracy (pooled over 7 held-out yes/no classification datasets),
+    "ood_classification_mean_answer_chars", "calls_remaining": n}. Takes about 5-7 minutes.
     """
     return run_evals("val", adapter_name, ["taboo", "ood_classification"])
 

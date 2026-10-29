@@ -56,6 +56,7 @@ generation_kwargs = {
 }
 
 by_dataset = {}
+answer_chars = []
 for ds in args.datasets:
     files = sorted(glob.glob(f"{args.data_dir}/classification_{ds}_*test*.pt"))
     assert files, f"no cached test set for {ds} in {args.data_dir}"
@@ -65,6 +66,7 @@ for ds in args.datasets:
         dtype=torch.bfloat16, global_step=-1, lora_path=None, eval_batch_size=256, steering_coefficient=1.0,
         generation_kwargs=generation_kwargs,
     )
+    answer_chars += [len(r.api_response.strip()) for r in responses]
     by_dataset[ds] = [
         dp.target_output.lower().strip() in r.api_response.lower().strip()
         for r, dp in zip(responses, data, strict=True)
@@ -74,6 +76,7 @@ pooled = [c for cs in by_dataset.values() for c in cs]
 summary = {
     "accuracy": sum(pooled) / len(pooled),
     "by_dataset": {ds: sum(cs) / len(cs) for ds, cs in by_dataset.items()},
+    "mean_answer_chars": sum(answer_chars) / len(answer_chars),
     "n": len(pooled),
 }
 print(json.dumps(summary, indent=2))

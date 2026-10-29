@@ -11,6 +11,8 @@ ENV PATH=/root/.local/bin:$PATH
 ENV CLAUDE_CODE_STOP_HOOK_BLOCK_CAP=100000
 # An eval MCP call takes several minutes (longer while training shares the GPU)
 ENV MCP_TOOL_TIMEOUT=1200000
+# Claude Code also aborts a call after 300 s with no response or progress, which loses a finished (and charged) eval
+ENV CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT=0
 COPY agent_files/ /opt/ao_agent/
 RUN chmod +x /opt/ao_agent/*.sh /opt/ao_agent/time_left \
     && ln -s /opt/ao_agent/time_left /usr/local/bin/time_left \
